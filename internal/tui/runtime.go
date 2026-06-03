@@ -7,7 +7,7 @@ import (
 )
 
 type Runtime interface {
-	Events() <-chan protocol.Event
+	Messages() <-chan protocol.ServiceMessage
 	Dispatch(protocol.Intent)
 	Close()
 	SessionID() string

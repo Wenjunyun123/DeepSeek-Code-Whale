@@ -13,14 +13,14 @@ import (
 )
 
 type testRuntime struct {
-	events chan protocol.Event
+	messages chan protocol.ServiceMessage
 }
 
-func (r *testRuntime) Events() <-chan protocol.Event {
-	if r.events == nil {
-		r.events = make(chan protocol.Event)
+func (r *testRuntime) Messages() <-chan protocol.ServiceMessage {
+	if r.messages == nil {
+		r.messages = make(chan protocol.ServiceMessage)
 	}
-	return r.events
+	return r.messages
 }
 
 func (r *testRuntime) Dispatch(protocol.Intent) {}

@@ -10,7 +10,8 @@ import (
 )
 
 type Runtime struct {
-	svc *service.Service
+	svc      *service.Service
+	messages <-chan protocol.ServiceMessage
 }
 
 func NewRuntime(ctx context.Context, cfg app.Config, start app.StartOptions) (*Runtime, error) {
@@ -18,10 +19,10 @@ func NewRuntime(ctx context.Context, cfg app.Config, start app.StartOptions) (*R
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{svc: svc}, nil
+	return &Runtime{svc: svc, messages: svc.Messages()}, nil
 }
 
-func (r *Runtime) Events() <-chan protocol.Event { return r.svc.Events() }
+func (r *Runtime) Messages() <-chan protocol.ServiceMessage { return r.messages }
 
 func (r *Runtime) Dispatch(in protocol.Intent) { r.svc.DispatchProtocol(in) }
 

@@ -93,31 +93,3 @@ type UserInputAnswer struct {
 type UserInputResponse struct {
 	Answers []UserInputAnswer `json:"answers"`
 }
-
-type ClientMessageType string
-
-const (
-	ClientMessageIntent ClientMessageType = "intent"
-)
-
-type ClientMessage struct {
-	Type   ClientMessageType `json:"type"`
-	Intent *Intent           `json:"intent,omitempty"`
-}
-
-type ServerMessageType string
-
-const (
-	ServerMessageReady  ServerMessageType = "ready"
-	ServerMessageEvent  ServerMessageType = "event"
-	ServerMessageError  ServerMessageType = "error"
-	ServerMessageClosed ServerMessageType = "closed"
-)
-
-type ServerMessage struct {
-	Type          ServerMessageType `json:"type"`
-	Event         *Event            `json:"event,omitempty"`
-	Error         string            `json:"error,omitempty"`
-	SessionID     string            `json:"session_id,omitempty"`
-	WorkspaceRoot string            `json:"workspace_root,omitempty"`
-}

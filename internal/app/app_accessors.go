@@ -76,6 +76,9 @@ func (a *App) ViewMode() string {
 func (a *App) ListMessages() ([]core.Message, error) {
 	return a.msgStore.List(a.ctx, a.sessionID)
 }
+func (a *App) ListSessionMessages(sessionID string) ([]core.Message, error) {
+	return a.msgStore.List(a.ctx, sessionID)
+}
 func (a *App) SupportedModels() []string { return defaults.SupportedModels() }
 func (a *App) SupportedEfforts() []string {
 	return SupportedReasoningEfforts()

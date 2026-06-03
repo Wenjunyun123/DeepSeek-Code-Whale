@@ -241,15 +241,15 @@ func TestAppServerCommandRunsStdioProtocol(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetIn(strings.NewReader(`{"type":"intent","intent":{"kind":"shutdown"}}` + "\n"))
+	root.SetIn(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"app/shutdown"}` + "\n"))
 	root.SetArgs([]string{"app-server"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("app-server: %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, `"type":"`+string(protocol.ServerMessageReady)+`"`) ||
-		!strings.Contains(got, `"type":"`+string(protocol.ServerMessageClosed)+`"`) {
-		t.Fatalf("expected ready and closed messages, got:\n%s", got)
+	if !strings.Contains(got, `"method":"`+protocol.RPCMethodAppReady+`"`) ||
+		!strings.Contains(got, `"method":"`+protocol.RPCMethodAppClosed+`"`) {
+		t.Fatalf("expected ready and closed notifications, got:\n%s", got)
 	}
 }
 

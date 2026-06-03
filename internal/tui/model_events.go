@@ -172,6 +172,356 @@ func (m *model) handleServiceEvents(events []protocol.Event) (tea.Cmd, bool, boo
 	return tea.Sequence(cmds...), false, false
 }
 
+func (m *model) handleServiceMessages(messages []protocol.ServiceMessage) (tea.Cmd, bool, bool) {
+	cmds := make([]tea.Cmd, 0, len(messages))
+	for _, msg := range messages {
+		cmd, quit, direct := m.handleServiceMessage(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if quit || direct {
+			return tea.Sequence(cmds...), quit, direct
+		}
+	}
+	return tea.Sequence(cmds...), false, false
+}
+
+func (m *model) handleServiceMessage(msg protocol.ServiceMessage) (tea.Cmd, bool, bool) {
+	switch msg.Type {
+	case protocol.ServiceMessageTurnCompleted:
+		m.clearProviderRetryStatus()
+		return m.handleTurnDone(protocol.Event{
+			Kind:         protocol.EventTurnDone,
+			TurnID:       msg.TurnID,
+			LastResponse: msg.LastResponse,
+			Metadata:     msg.Metadata,
+		}), false, false
+	case protocol.ServiceMessageItemDelta:
+		return m.handleServiceDeltaMessage(msg)
+	case protocol.ServiceMessageItemStarted, protocol.ServiceMessageItemCompleted:
+		return m.handleServiceItemMessage(msg)
+	case protocol.ServiceMessageControl:
+		return m.handleServiceControlMessage(msg)
+	default:
+		return nil, false, false
+	}
+}
+
+func (m *model) handleServiceDeltaMessage(msg protocol.ServiceMessage) (tea.Cmd, bool, bool) {
+	if msg.Delta == nil {
+		return nil, false, false
+	}
+	ev := protocol.Event{
+		TurnID:   msg.TurnID,
+		ItemID:   msg.Delta.ItemID,
+		Text:     msg.Delta.Text,
+		Metadata: msg.Delta.Metadata,
+	}
+	switch msg.Delta.Type {
+	case protocol.ThreadItemDeltaAgentMessage:
+		ev.Kind = protocol.EventAssistantDelta
+		m.handleAssistantDeltaEvent(ev)
+	case protocol.ThreadItemDeltaReasoning:
+		ev.Kind = protocol.EventReasoningDelta
+		m.handleReasoningDeltaEvent(ev)
+	case protocol.ThreadItemDeltaPlan:
+		ev.Kind = protocol.EventPlanDelta
+		m.handlePlanDeltaEvent(ev)
+	case protocol.ThreadItemDeltaTaskActivity:
+		ev.Kind = protocol.EventTaskProgress
+		m.handleTaskProgressEvent(ev)
+	case protocol.ThreadItemDeltaNotice:
+		ev.Kind = protocol.EventBtwDelta
+		m.handleBtwDeltaEvent(ev)
+	default:
+		return nil, false, false
+	}
+	return nil, false, false
+}
+
+func (m *model) handleServiceItemMessage(msg protocol.ServiceMessage) (tea.Cmd, bool, bool) {
+	if msg.Item == nil {
+		return nil, false, false
+	}
+	item := msg.Item
+	ev := threadItemEvent(msg)
+	switch item.Type {
+	case protocol.ThreadItemAgentMessage:
+		m.handleAssistantDeltaEvent(ev)
+	case protocol.ThreadItemReasoning:
+		m.handleReasoningDeltaEvent(ev)
+	case protocol.ThreadItemPlan:
+		if item.Status == "update" {
+			m.handlePlanUpdateEvent(ev)
+		} else {
+			m.handlePlanCompletedEvent(ev)
+		}
+	case protocol.ThreadItemToolCall:
+		m.handleToolCallEvent(ev)
+	case protocol.ThreadItemToolResult:
+		return m.handleToolResultEvent(ev), false, false
+	case protocol.ThreadItemHookRun:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			m.handleHookStartedEvent(ev)
+		} else {
+			m.handleHookCompletedEvent(ev)
+		}
+	case protocol.ThreadItemTaskActivity:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			m.handleTaskStartedEvent(ev)
+		} else {
+			m.handleTaskCompletedEvent(ev)
+		}
+	case protocol.ThreadItemWorkflowRun:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			m.handleWorkflowSnapshotEvent(ev)
+		} else {
+			m.handleWorkflowTerminalEvent(ev)
+		}
+	case protocol.ThreadItemLocalCommand:
+		return m.handleLocalSubmitResultEvent(ev), false, false
+	case protocol.ThreadItemError:
+		m.handleErrorEvent(ev)
+	case protocol.ThreadItemContextCompaction:
+		m.handleResponseResetEvent(ev)
+	case protocol.ThreadItemNotice:
+		m.handleInfoEvent(ev)
+	default:
+		return nil, false, false
+	}
+	return nil, false, false
+}
+
+func threadItemEvent(msg protocol.ServiceMessage) protocol.Event {
+	item := msg.Item
+	kind := threadItemEventKind(msg)
+	text := item.Text
+	if text == "" {
+		text = item.Output
+	}
+	if text == "" {
+		text = item.Input
+	}
+	return protocol.Event{
+		Kind:        kind,
+		TurnID:      firstNonEmptyString(msg.TurnID, item.TurnID),
+		ItemID:      item.ID,
+		ToolCallID:  item.ToolCallID,
+		ToolName:    item.ToolName,
+		Text:        text,
+		Status:      item.Status,
+		DurationMS:  item.DurationMS,
+		Hook:        item.Hook,
+		LocalResult: item.Local,
+		Metadata:    item.Metadata,
+	}
+}
+
+func threadItemEventKind(msg protocol.ServiceMessage) protocol.EventKind {
+	if msg.Item == nil {
+		return ""
+	}
+	switch msg.Item.Type {
+	case protocol.ThreadItemAgentMessage:
+		return protocol.EventAssistantDelta
+	case protocol.ThreadItemReasoning:
+		return protocol.EventReasoningDelta
+	case protocol.ThreadItemPlan:
+		if msg.Item.Status == "update" {
+			return protocol.EventPlanUpdate
+		}
+		return protocol.EventPlanCompleted
+	case protocol.ThreadItemToolCall:
+		return protocol.EventToolCall
+	case protocol.ThreadItemToolResult:
+		return protocol.EventToolResult
+	case protocol.ThreadItemHookRun:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			return protocol.EventHookStarted
+		}
+		return protocol.EventHookCompleted
+	case protocol.ThreadItemTaskActivity:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			return protocol.EventTaskStarted
+		}
+		return protocol.EventTaskCompleted
+	case protocol.ThreadItemWorkflowRun:
+		if msg.Type == protocol.ServiceMessageItemStarted {
+			return protocol.EventWorkflowSnapshot
+		}
+		return protocol.EventWorkflowTerminal
+	case protocol.ThreadItemLocalCommand:
+		return protocol.EventLocalSubmitResult
+	case protocol.ThreadItemError:
+		return protocol.EventError
+	case protocol.ThreadItemContextCompaction:
+		return protocol.EventResponseReset
+	case protocol.ThreadItemNotice:
+		return protocol.EventInfo
+	default:
+		return ""
+	}
+}
+
+func (m *model) handleServiceControlMessage(msg protocol.ServiceMessage) (tea.Cmd, bool, bool) {
+	if msg.Control == nil {
+		return nil, false, false
+	}
+	ev := controlEvent(msg)
+	if ev.AutoAcceptKnown {
+		m.autoAccept = ev.AutoAccept
+	}
+	if action, ok := uiActionFromServiceEvent(ev); ok {
+		return m.handleUIAction(action)
+	}
+	switch ev.Kind {
+	case protocol.EventLocalSubmitResult:
+		return m.handleLocalSubmitResultEvent(ev), false, false
+	case protocol.EventWorkflowPanel:
+		return m.handleWorkflowPanelEvent(ev.LocalResult), false, false
+	case protocol.EventDiffResult:
+		m.handleDiffResultEvent(ev)
+	case protocol.EventBtwStarted:
+		m.handleBtwStartedEvent(ev)
+	case protocol.EventBtwDone:
+		m.handleBtwDoneEvent(ev)
+	case protocol.EventBtwError:
+		m.handleBtwErrorEvent(ev)
+	case protocol.EventPendingInputAccepted:
+		m.markPendingInputAccepted(ev.ClientInputID)
+	case protocol.EventPendingInputRejected:
+		return m.rejectPendingInput(ev.ClientInputID, ev.Text), false, false
+	case protocol.EventMCPStatus:
+		m.handleMCPStatusEvent(ev)
+	case protocol.EventMCPComplete:
+		m.handleMCPCompleteEvent(ev)
+	case protocol.EventApprovalRequired:
+		m.handleApprovalRequiredEvent(ev)
+	case protocol.EventApprovalDecision:
+		m.handleApprovalDecisionEvent(ev)
+	case protocol.EventUserInputRequired:
+		m.handleUserInputRequiredEvent(ev)
+	case protocol.EventUserInputDone:
+		m.handleUserInputDoneEvent(ev)
+	case protocol.EventSessionsListed:
+		m.handleSessionsListedEvent(ev)
+	case protocol.EventRewindMessagesListed:
+		m.handleRewindMessagesListedEvent(ev)
+	case protocol.EventLocalSubmitDone:
+		m.clearProviderRetryStatus()
+		return m.finishLocalSubmit(), false, false
+	case protocol.EventSkillLoaded:
+		m.handleSkillLoadedEvent(ev)
+	case protocol.EventViewModeChanged:
+		return m.handleViewModeChangedEvent(ev), false, false
+	case protocol.EventWorktreeExitPrompt:
+		m.handleWorktreeExitPromptEvent(ev)
+	case protocol.EventSessionHydrated:
+		return m.handleSessionHydratedEvent(ev), false, false
+	case protocol.EventExitRequested:
+		m.handleExitRequestedEvent()
+		return nil, true, false
+	case protocol.EventInfo:
+		m.handleInfoEvent(ev)
+	case protocol.EventError:
+		m.handleErrorEvent(ev)
+	}
+	return nil, false, false
+}
+
+func controlEvent(msg protocol.ServiceMessage) protocol.Event {
+	c := msg.Control
+	kind := controlEventKind(c)
+	return protocol.Event{
+		Kind:            kind,
+		TurnID:          msg.TurnID,
+		ClientInputID:   c.ClientInputID,
+		ApprovalID:      c.ApprovalID,
+		Decision:        c.Decision,
+		DecisionScope:   c.DecisionScope,
+		ApprovalKeys:    c.ApprovalKeys,
+		Text:            c.Text,
+		Status:          c.Status,
+		Questions:       c.Questions,
+		Choices:         c.Choices,
+		Approval:        c.Approval,
+		ModelChoices:    c.ModelChoices,
+		EffortChoices:   c.EffortChoices,
+		CurrentModel:    c.CurrentModel,
+		CurrentEffort:   c.CurrentEffort,
+		ThinkingChoices: c.ThinkingChoices,
+		CurrentThinking: c.CurrentThinking,
+		AutoAccept:      c.AutoAccept,
+		AutoAcceptKnown: c.AutoAcceptKnown,
+		ViewMode:        c.ViewMode,
+		LocalResult:     c.Local,
+		Hook:            nil,
+		Skills:          c.Skills,
+		Plugins:         c.Plugins,
+		Config:          c.Config,
+		Open:            c.Open,
+		Hooks:           c.Hooks,
+		WorktreeExit:    c.WorktreeExit,
+		SessionID:       c.SessionID,
+		Messages:        c.Messages,
+		Metadata:        c.Metadata,
+	}
+}
+
+func controlEventKind(c *protocol.ControlMessage) protocol.EventKind {
+	if c == nil {
+		return ""
+	}
+	if c.EventKind != "" {
+		return c.EventKind
+	}
+	switch c.Type {
+	case protocol.ControlMessageApprovalRequired:
+		return protocol.EventApprovalRequired
+	case protocol.ControlMessageApprovalDecision:
+		return protocol.EventApprovalDecision
+	case protocol.ControlMessageUserInputRequired:
+		return protocol.EventUserInputRequired
+	case protocol.ControlMessageUserInputDone:
+		return protocol.EventUserInputDone
+	case protocol.ControlMessageSessionHydrated:
+		return protocol.EventSessionHydrated
+	case protocol.ControlMessageSessionsListed:
+		return protocol.EventSessionsListed
+	case protocol.ControlMessageRewindMessagesListed:
+		return protocol.EventRewindMessagesListed
+	case protocol.ControlMessageLocalSubmitResult:
+		return protocol.EventLocalSubmitResult
+	case protocol.ControlMessageLocalSubmitDone:
+		return protocol.EventLocalSubmitDone
+	case protocol.ControlMessageDiffResult:
+		return protocol.EventDiffResult
+	case protocol.ControlMessagePendingInputAccepted:
+		return protocol.EventPendingInputAccepted
+	case protocol.ControlMessagePendingInputRejected:
+		return protocol.EventPendingInputRejected
+	case protocol.ControlMessageViewModeChanged:
+		return protocol.EventViewModeChanged
+	case protocol.ControlMessageReviewRequested:
+		return protocol.EventReviewRequested
+	case protocol.ControlMessageScreenClearRequested:
+		return protocol.EventScreenClearRequested
+	case protocol.ControlMessageExitRequested:
+		return protocol.EventExitRequested
+	default:
+		return ""
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (m *model) handleTurnDone(ev protocol.Event) tea.Cmd {
 	wasBusy := m.busy
 	wasStopping := m.stopping

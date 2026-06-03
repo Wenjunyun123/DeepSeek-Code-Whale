@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/usewhale/whale/internal/runtime/protocol"
 )
 
 func (s *Service) emit(ev Event) {
@@ -18,6 +20,16 @@ func (s *Service) emit(ev Event) {
 }
 
 func (s *Service) emitReliable(ev Event) {
+	if s.messages != nil && !s.legacyEvents.Load() {
+		for _, msg := range s.messagesForEvent(ev) {
+			select {
+			case s.messages <- msg:
+			case <-s.ctx.Done():
+				return
+			}
+		}
+		return
+	}
 	select {
 	case s.events <- ev:
 	case <-s.ctx.Done():
@@ -25,10 +37,24 @@ func (s *Service) emitReliable(ev Event) {
 }
 
 func (s *Service) emitBestEffort(ev Event) {
+	if s.messages != nil && !s.legacyEvents.Load() {
+		for _, msg := range s.messagesForEvent(ev) {
+			select {
+			case s.messages <- msg:
+			default:
+			}
+		}
+		return
+	}
 	select {
 	case s.events <- ev:
 	default:
 	}
+}
+
+func (s *Service) messagesForEvent(ev Event) []protocol.ServiceMessage {
+	active, _ := s.ActiveTurnSnapshot()
+	return EventServiceMessages(s.SessionID(), ev, active)
 }
 
 func isCriticalEvent(kind EventKind) bool {
@@ -41,11 +67,14 @@ func isCriticalEvent(kind EventKind) bool {
 }
 
 func (s *Service) prepareLifecycleEvent(ev Event) Event {
-	if !isLifecycleEvent(ev.Kind) {
-		return ev
-	}
 	if ev.Sequence == 0 {
 		ev.Sequence = s.nextEventSequence.Add(1)
+	}
+	if ev.TurnID == "" {
+		ev.TurnID = s.currentTurnID()
+	}
+	if !isLifecycleEvent(ev.Kind) {
+		return ev
 	}
 	if ev.StartedAt.IsZero() {
 		ev.StartedAt = time.Now()
@@ -60,6 +89,12 @@ func (s *Service) prepareLifecycleEvent(ev Event) Event {
 		ev.WorkflowRunID = workflowRunIDFromEvent(ev)
 	}
 	return ev
+}
+
+func (s *Service) currentTurnID() string {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	return s.activeTurnID
 }
 
 func isLifecycleEvent(kind EventKind) bool {
@@ -191,14 +226,30 @@ SendLoop:
 			sent = i + 1
 			continue
 		}
-		select {
-		case c.svc.events <- Event{Kind: chunk.kind, Text: chunk.text}:
-			sent = i + 1
-		default:
-			// Stop at the first failure so we preserve cross-kind order on
-			// re-queue: a later same-kind chunk slipping ahead of an earlier
-			// different-kind one would corrupt the visible stream.
-			break SendLoop
+		ev := c.svc.prepareLifecycleEvent(Event{Kind: chunk.kind, Text: chunk.text})
+		if c.svc.messages != nil && !c.svc.legacyEvents.Load() {
+			sentMessage := false
+			for _, msg := range c.svc.messagesForEvent(ev) {
+				select {
+				case c.svc.messages <- msg:
+					sentMessage = true
+				default:
+					break SendLoop
+				}
+			}
+			if sentMessage {
+				sent = i + 1
+			}
+		} else {
+			select {
+			case c.svc.events <- ev:
+				sent = i + 1
+			default:
+				// Stop at the first failure so we preserve cross-kind order on
+				// re-queue: a later same-kind chunk slipping ahead of an earlier
+				// different-kind one would corrupt the visible stream.
+				break SendLoop
+			}
 		}
 	}
 	remainder := chunks[sent:]
@@ -255,16 +306,16 @@ func (c *turnDeltaCoalescers) flushReliable() {
 
 	for _, chunk := range chunks {
 		if chunk.text != "" {
-			c.svc.emitReliable(Event{Kind: chunk.kind, Text: chunk.text})
+			c.svc.emit(Event{Kind: chunk.kind, Text: chunk.text})
 		}
 	}
 	if droppedBytes > 0 {
 		// The notice itself must be reliable: emitting it best-effort means
 		// that under sustained UI backpressure the user never learns content
 		// was dropped, defeating the point of the notice.
-		c.svc.emitReliable(Event{
+		c.svc.emitReliable(c.svc.prepareLifecycleEvent(Event{
 			Kind: EventInfo,
 			Text: fmt.Sprintf("[stream] UI backpressure exceeded buffer; omitted ~%d bytes of streamed text", droppedBytes),
-		})
+		}))
 	}
 }

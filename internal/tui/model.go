@@ -295,6 +295,8 @@ type skillManagerItem struct {
 	Toggleable          bool
 }
 
+type serviceMsg protocol.ServiceMessage
+type serviceBatchMsg []protocol.ServiceMessage
 type svcMsg protocol.Event
 type svcBatchMsg []protocol.Event
 
@@ -370,24 +372,47 @@ func (m *model) dispatchIntent(in protocol.Intent) {
 
 func waitEventCmd(rt Runtime) tea.Cmd {
 	return func() tea.Msg {
-		ev := <-rt.Events()
-		if !shouldBatchServiceEvent(ev) {
-			return svcMsg(ev)
+		msg := <-rt.Messages()
+		if !shouldBatchServiceMessage(msg) {
+			return serviceMsg(msg)
 		}
-		events := appendBatchedServiceEvent(nil, ev)
+		messages := appendBatchedServiceMessage(nil, msg)
 		timer := time.NewTimer(serviceDeltaFrame)
 		defer timer.Stop()
 		for {
 			select {
-			case next := <-rt.Events():
-				events = appendBatchedServiceEvent(events, next)
-				if !shouldBatchServiceEvent(next) {
-					return svcBatchMsg(events)
+			case next := <-rt.Messages():
+				messages = appendBatchedServiceMessage(messages, next)
+				if !shouldBatchServiceMessage(next) {
+					return serviceBatchMsg(messages)
 				}
 			case <-timer.C:
-				return svcBatchMsg(events)
+				return serviceBatchMsg(messages)
 			}
 		}
+	}
+}
+
+func appendBatchedServiceMessage(messages []protocol.ServiceMessage, msg protocol.ServiceMessage) []protocol.ServiceMessage {
+	if shouldBatchServiceMessage(msg) && len(messages) > 0 {
+		last := &messages[len(messages)-1]
+		if last.Delta != nil && msg.Delta != nil && last.Delta.Type == msg.Delta.Type && last.Delta.ItemID == msg.Delta.ItemID {
+			last.Delta.Text += msg.Delta.Text
+			return messages
+		}
+	}
+	return append(messages, msg)
+}
+
+func shouldBatchServiceMessage(msg protocol.ServiceMessage) bool {
+	if msg.Type != protocol.ServiceMessageItemDelta || msg.Delta == nil {
+		return false
+	}
+	switch msg.Delta.Type {
+	case protocol.ThreadItemDeltaAgentMessage, protocol.ThreadItemDeltaReasoning, protocol.ThreadItemDeltaPlan:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -445,10 +470,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.handleWindowSizeMsg(msg)
+	case serviceMsg:
+		return m.handleServiceUpdate([]protocol.ServiceMessage{protocol.ServiceMessage(msg)})
+	case serviceBatchMsg:
+		return m.handleServiceUpdate([]protocol.ServiceMessage(msg))
 	case svcMsg:
-		return m.handleServiceUpdate([]protocol.Event{protocol.Event(msg)})
+		return m.handleLegacyServiceUpdate([]protocol.Event{protocol.Event(msg)})
 	case svcBatchMsg:
-		return m.handleServiceUpdate([]protocol.Event(msg))
+		return m.handleLegacyServiceUpdate([]protocol.Event(msg))
 	case windowsDeferredEnterMsg:
 		return m, m.sequenceCmds(m.handleWindowsDeferredEnter(msg))
 	case windowsPendingEnterTailMsg:
@@ -549,7 +578,20 @@ func (m model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, m.sequenceCmds(headerCmd, scrollbackReplayCmd)
 }
 
-func (m model) handleServiceUpdate(events []protocol.Event) (tea.Model, tea.Cmd) {
+func (m model) handleServiceUpdate(messages []protocol.ServiceMessage) (tea.Model, tea.Cmd) {
+	eventCmd, quit, direct := m.handleServiceMessages(messages)
+	if quit {
+		return m, m.sequenceCmds(tea.Quit)
+	}
+	if direct {
+		return m, m.sequenceCmds(eventCmd)
+	}
+	headerCmd := m.startupHeaderPrintCmd()
+	scrollbackCmd := m.flushNativeScrollbackCmd()
+	return m, m.sequenceCmds(eventCmd, headerCmd, scrollbackCmd, waitEventCmd(m.runtime))
+}
+
+func (m model) handleLegacyServiceUpdate(events []protocol.Event) (tea.Model, tea.Cmd) {
 	eventCmd, quit, direct := m.handleServiceEvents(events)
 	if quit {
 		return m, m.sequenceCmds(tea.Quit)

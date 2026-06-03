@@ -272,6 +272,10 @@ func (a *App) listWorkspaceResumeSummaries(limit int) ([]session.SessionSummary,
 	return filtered, nil
 }
 
+func (a *App) ListWorkspaceSessionSummaries(limit int) ([]session.SessionSummary, error) {
+	return a.listWorkspaceResumeSummaries(limit)
+}
+
 func humanAgo(ts time.Time) string {
 	if ts.IsZero() {
 		return "-"
@@ -341,4 +345,18 @@ func (a *App) ApplyResumeChoice(choice string) (ResumeApplyResult, error) {
 		out += fmt.Sprintf("\npending user input: tool_call=%s questions=%d", ust.ToolCallID, len(ust.Questions))
 	}
 	return ResumeApplyResult{Message: out, Resumed: true}, nil
+}
+
+func (a *App) StartNewSession() (string, error) {
+	next := newSessionID(time.Now())
+	if err := patchNewSessionMeta(a.sessionsDir, next, a.workspaceRoot, session.DetectGitBranch(a.workspaceRoot), StartOptions{NewSession: true}); err != nil {
+		return "", err
+	}
+	a.sessionID = next
+	modeState, err := session.LoadModeState(a.sessionsDir, a.sessionID)
+	if err != nil {
+		return "", err
+	}
+	a.currentMode = modeState.Mode
+	return a.sessionID, nil
 }

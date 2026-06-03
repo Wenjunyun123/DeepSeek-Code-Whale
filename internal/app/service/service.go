@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/usewhale/whale/internal/app"
 	"github.com/usewhale/whale/internal/core"
@@ -154,10 +155,14 @@ type Service struct {
 	serviceCtxCancel context.CancelFunc
 	app              *app.App
 	events           chan Event
+	messages         chan protocol.ServiceMessage
+	legacyEvents     atomic.Bool
 	localSubmits     chan string
 	cancelMu         sync.Mutex
 	cancel           context.CancelFunc
 	active           bool
+	activeTurnID     string
+	activeTurnStart  time.Time
 	bgWG             sync.WaitGroup
 
 	interactionMu     sync.Mutex
@@ -171,6 +176,7 @@ type Service struct {
 	inputs  map[string]chan userInputDecision
 
 	btwNextID         atomic.Int64
+	nextTurnSequence  atomic.Int64
 	nextEventSequence atomic.Int64
 
 	workflowWatchMu      sync.Mutex
@@ -196,6 +202,7 @@ func New(ctx context.Context, cfg app.Config, start app.StartOptions) (*Service,
 		serviceCtxCancel: cancel,
 		app:              a,
 		events:           make(chan Event, 512),
+		messages:         make(chan protocol.ServiceMessage, 512),
 		localSubmits:     make(chan string, 64),
 		approvals:        map[string]pendingApproval{},
 		sessionGrants:    map[string]map[string]bool{},
@@ -261,8 +268,30 @@ func (s *Service) goTracked(fn func()) {
 	}()
 }
 
-func (s *Service) Events() <-chan Event { return s.events }
-func (s *Service) SessionID() string    { return s.app.SessionID() }
+func (s *Service) Events() <-chan Event {
+	if s.messages == nil {
+		return s.events
+	}
+	s.legacyEvents.Store(true)
+	for {
+		select {
+		case msg := <-s.messages:
+			ev, ok := ServiceMessageEvent(msg)
+			if !ok {
+				continue
+			}
+			select {
+			case s.events <- ev:
+			default:
+				return s.events
+			}
+		default:
+			return s.events
+		}
+	}
+}
+func (s *Service) Messages() <-chan protocol.ServiceMessage { return s.messages }
+func (s *Service) SessionID() string                        { return s.app.SessionID() }
 func (s *Service) WorkspaceRoot() string {
 	return s.app.WorkspaceRoot()
 }

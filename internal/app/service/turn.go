@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/app"
@@ -106,6 +107,10 @@ func (s *Service) runSideQuestion(question string) {
 }
 
 func (s *Service) runTurnWith(start func(context.Context) (<-chan agent.AgentEvent, error)) {
+	s.runTurnWithID("", time.Time{}, start)
+}
+
+func (s *Service) runTurnWithID(turnID string, startedAt time.Time, start func(context.Context) (<-chan agent.AgentEvent, error)) {
 	turnCtx, cancel := context.WithCancel(s.ctx)
 	s.cancelMu.Lock()
 	if s.active {
@@ -115,14 +120,24 @@ func (s *Service) runTurnWith(start func(context.Context) (<-chan agent.AgentEve
 		s.emit(Event{Kind: EventTurnDone})
 		return
 	}
+	if turnID == "" {
+		turnID = s.nextTurnID()
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
 	s.active = true
 	s.cancel = cancel
+	s.activeTurnID = turnID
+	s.activeTurnStart = startedAt
 	s.resetInteractionShutdown()
 	s.cancelMu.Unlock()
 	defer func() {
 		s.cancelMu.Lock()
 		s.cancel = nil
 		s.active = false
+		s.activeTurnID = ""
+		s.activeTurnStart = time.Time{}
 		s.cancelMu.Unlock()
 		cancel()
 	}()
