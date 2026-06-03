@@ -483,6 +483,8 @@ func ServiceMessageEvent(msg protocol.ServiceMessage) (Event, bool) {
 			Kind:            kind,
 			TurnID:          msg.TurnID,
 			ClientInputID:   c.ClientInputID,
+			ToolCallID:      firstNonEmpty(c.ToolCallID, toolCallIDFromApproval(c.Approval)),
+			ToolName:        firstNonEmpty(c.ToolName, toolNameFromApproval(c.Approval)),
 			ApprovalID:      c.ApprovalID,
 			Decision:        c.Decision,
 			DecisionScope:   c.DecisionScope,
@@ -681,6 +683,8 @@ func eventControlMessage(ev Event) (protocol.ControlMessage, bool) {
 		Status:          ev.Status,
 		EventKind:       ev.Kind,
 		ClientInputID:   ev.ClientInputID,
+		ToolCallID:      ev.ToolCallID,
+		ToolName:        ev.ToolName,
 		ApprovalID:      ev.ApprovalID,
 		Decision:        ev.Decision,
 		DecisionScope:   ev.DecisionScope,
@@ -809,6 +813,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func toolCallIDFromApproval(approval *protocol.ApprovalRequest) string {
+	if approval == nil {
+		return ""
+	}
+	return approval.ToolCall.ID
+}
+
+func toolNameFromApproval(approval *protocol.ApprovalRequest) string {
+	if approval == nil {
+		return ""
+	}
+	return approval.ToolCall.Name
 }
 
 func firstNonZeroTime(values ...time.Time) time.Time {

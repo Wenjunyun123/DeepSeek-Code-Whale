@@ -58,6 +58,8 @@ type ControlMessage struct {
 	Status          string               `json:"status,omitempty"`
 	EventKind       EventKind            `json:"event_kind,omitempty"`
 	ClientInputID   string               `json:"client_input_id,omitempty"`
+	ToolCallID      string               `json:"tool_call_id,omitempty"`
+	ToolName        string               `json:"tool_name,omitempty"`
 	ApprovalID      string               `json:"approval_id,omitempty"`
 	Decision        string               `json:"decision,omitempty"`
 	DecisionScope   string               `json:"decision_scope,omitempty"`

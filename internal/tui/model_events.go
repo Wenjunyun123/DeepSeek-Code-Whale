@@ -436,6 +436,8 @@ func controlEvent(msg protocol.ServiceMessage) protocol.Event {
 		Kind:            kind,
 		TurnID:          msg.TurnID,
 		ClientInputID:   c.ClientInputID,
+		ToolCallID:      firstNonEmptyString(c.ToolCallID, toolCallIDFromControlApproval(c.Approval)),
+		ToolName:        firstNonEmptyString(c.ToolName, toolNameFromControlApproval(c.Approval)),
 		ApprovalID:      c.ApprovalID,
 		Decision:        c.Decision,
 		DecisionScope:   c.DecisionScope,
@@ -466,6 +468,20 @@ func controlEvent(msg protocol.ServiceMessage) protocol.Event {
 		Messages:        c.Messages,
 		Metadata:        c.Metadata,
 	}
+}
+
+func toolCallIDFromControlApproval(approval *protocol.ApprovalRequest) string {
+	if approval == nil {
+		return ""
+	}
+	return approval.ToolCall.ID
+}
+
+func toolNameFromControlApproval(approval *protocol.ApprovalRequest) string {
+	if approval == nil {
+		return ""
+	}
+	return approval.ToolCall.Name
 }
 
 func controlEventKind(c *protocol.ControlMessage) protocol.EventKind {

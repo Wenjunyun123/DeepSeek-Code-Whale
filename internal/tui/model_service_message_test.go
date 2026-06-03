@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/usewhale/whale/internal/runtime/protocol"
 	tuirender "github.com/usewhale/whale/internal/tui/render"
 )
@@ -72,5 +74,34 @@ func TestServiceMessageControlPreservesPendingInputState(t *testing.T) {
 	}
 	if len(m.pendingSteers) != 1 || !m.pendingSteers[0].Accepted {
 		t.Fatalf("pending steer not accepted: %+v", m.pendingSteers)
+	}
+}
+
+func TestServiceMessageApprovalRequiredPreservesToolCallID(t *testing.T) {
+	m, intents := newModelWithDispatchSpy()
+	_, quit, direct := m.handleServiceMessages([]protocol.ServiceMessage{{
+		Type:     protocol.ServiceMessageControl,
+		ThreadID: "s1",
+		TurnID:   "turn-1",
+		Control: &protocol.ControlMessage{
+			Type:       protocol.ControlMessageApprovalRequired,
+			ToolCallID: "call-push",
+			ToolName:   "shell_run",
+			Text:       "shell_run: git push -u origin feat/desktop-support",
+			Approval: &protocol.ApprovalRequest{
+				ToolCall: protocol.ToolCall{ID: "call-push", Name: "shell_run"},
+			},
+		},
+	}})
+	if quit || direct {
+		t.Fatalf("unexpected approval service message result: quit=%v direct=%v", quit, direct)
+	}
+	if m.mode != modeApproval || m.approval.toolCallID != "call-push" || m.approval.toolName != "shell_run" {
+		t.Fatalf("typed approval did not preserve tool identity: mode=%v approval=%+v", m.mode, m.approval)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = next.(model)
+	if len(*intents) != 1 || (*intents)[0].Kind != protocol.IntentAllowTool || (*intents)[0].ToolCallID != "call-push" {
+		t.Fatalf("unexpected typed approval intent: %+v", *intents)
 	}
 }
